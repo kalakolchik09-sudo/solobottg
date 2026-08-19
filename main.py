@@ -5,7 +5,6 @@ import random
 import json
 from datetime import datetime, timedelta
 import secrets
-import sys
 
 # Telegram imports
 from aiogram import Bot, Dispatcher, types
@@ -28,31 +27,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
-# Используем переменные окружения Railway
-API_ID = int(os.getenv('API_ID', '39099812'))
-API_HASH = os.getenv('API_HASH', 'afa93461e955b867b6ddd8178b5639e6')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8906856758:AAFeJNRtPKxhqXH1OdPKObwxxfqQwwaHRbg')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '964442694'))
+API_ID = int(os.getenv('API_ID', 0))
+API_HASH = os.getenv('API_HASH', '')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не указан!")
     raise ValueError("BOT_TOKEN is required")
 
+if not API_ID or not API_HASH:
+    logger.error("❌ API_ID и API_HASH обязательны!")
+    raise ValueError("API_ID and API_HASH are required")
+
 # ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
 def get_database_url():
-    """Получение URL базы данных с учетом окружения"""
-    
-    # На Railway используем переменные окружения
     db_url = os.getenv('DATABASE_URL')
     
     if db_url:
-        # Конвертируем postgres:// в postgresql:// если нужно
         if db_url.startswith('postgres://'):
             db_url = db_url.replace('postgres://', 'postgresql://', 1)
-        logger.info("🐘 Используем DATABASE_URL из окружения")
+        logger.info("✅ Используем DATABASE_URL")
         return db_url
     
-    # Если нет DATABASE_URL, пробуем собрать из частей
     pguser = os.getenv('PGUSER', 'postgres')
     pgpassword = os.getenv('PGPASSWORD')
     pgdomain = os.getenv('RAILWAY_TCP_PROXY_DOMAIN')
@@ -61,35 +58,26 @@ def get_database_url():
     
     if pgpassword and pgdomain:
         db_url = f"postgresql://{pguser}:{pgpassword}@{pgdomain}:{pgport}/{pgdatabase}"
-        logger.info("🐘 Используем собранный URL из переменных Railway")
+        logger.info("✅ Используем собранный URL")
         return db_url
     
-    # Если ничего не найдено - используем SQLite (для локальной разработки)
-    logger.warning("⚠️ Переменные БД не найдены, используем SQLite")
+    logger.warning("⚠️ Используем SQLite")
     return 'sqlite:///bot.db'
 
 DATABASE_URL = get_database_url()
 
-# Создаем engine с настройками для Railway
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
-    pool_recycle=3600,
-    connect_args={
-        'connect_timeout': 10,
-        'keepalives': 1,
-        'keepalives_idle': 30,
-        'keepalives_interval': 10,
-        'keepalives_count': 5
-    } if DATABASE_URL.startswith('postgresql') else {}
+    pool_recycle=3600
 )
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
-# ==================== МОДЕЛИ БАЗЫ ДАННЫХ ====================
+# ==================== МОДЕЛИ ====================
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -134,23 +122,16 @@ class BroadcastTask(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 # ==================== ИНИЦИАЛИЗАЦИЯ БД ====================
-def init_db():
-    """Создание таблиц с обработкой ошибок"""
-    try:
-        Base.metadata.create_all(engine)
-        logger.info("✅ Таблицы созданы/проверены")
-        
-        # Проверяем подключение
-        with engine.connect() as conn:
-            if DATABASE_URL.startswith('postgresql'):
-                conn.execute(text("SELECT 1"))
-            logger.info("✅ Подключение к БД успешно")
-    except Exception as e:
-        logger.error(f"❌ Ошибка БД: {e}")
-        raise
-
-# Инициализируем БД
-init_db()
+try:
+    Base.metadata.create_all(engine)
+    logger.info("✅ Таблицы созданы")
+    
+    with engine.connect() as conn:
+        if DATABASE_URL.startswith('postgresql'):
+            conn.execute(text("SELECT 1"))
+    logger.info("✅ Подключение к БД успешно")
+except Exception as e:
+    logger.error(f"❌ Ошибка БД: {e}")
 
 # ==================== STATES ====================
 class UserStates(StatesGroup):
@@ -159,17 +140,12 @@ class UserStates(StatesGroup):
     waiting_password = State()
     waiting_license = State()
     admin_create_key = State()
-    admin_set_accounts = State()
-    admin_give_unlimited = State()
-    admin_remove_all = State()
     admin_broadcast = State()
-    waiting_message = State()
     waiting_interval = State()
-    selecting_accounts = State()
     waiting_more_messages = State()
     waiting_safe_messages = State()
 
-# ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
+# ==================== БОТ ====================
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
@@ -422,7 +398,7 @@ async def start_broadcast(user_id: int, task_id: int):
         except:
             pass
 
-# ==================== КОМАНДЫ ====================
+# ==================== ОБРАБОТЧИКИ ====================
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     create_user_if_not_exists(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -432,7 +408,6 @@ async def cmd_start(message: types.Message):
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
-# ==================== CALLBACK HANDLERS ====================
 @dp.callback_query_handler(lambda c: c.data == "back")
 async def back(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
@@ -772,7 +747,6 @@ async def cb_adm_broadcast(callback_query: types.CallbackQuery):
     )
     await UserStates.admin_broadcast.set()
 
-# ==================== MESSAGE HANDLERS ====================
 @dp.message_handler(state=UserStates.waiting_license)
 async def process_license(message: types.Message, state: FSMContext):
     key = message.text.strip()
