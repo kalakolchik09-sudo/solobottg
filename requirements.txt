@@ -1,0 +1,6 @@
+aiogram==2.25.1
+pyrogram==2.0.106
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+aiohttp==3.9.1
+pytgcalls==4.0.0
